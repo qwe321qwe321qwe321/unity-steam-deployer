@@ -1,234 +1,271 @@
 # Unity Steam Deployer
 
 一個「保母級」Unity 編輯器外掛程式，讓你只需點一個按鈕，即可自動完成遊戲編譯並上傳至 Steam。
+全程不需要手動執行任何命令列指令，不需要手動編寫任何 VDF 腳本。
 
 ---
 
 ## 功能概覽
 
-- **一鍵部署**：點擊「Build & Upload to Steam」，系統自動完成 Unity 編譯 → 生成 VDF 腳本 → 執行 SteamCMD 上傳，全程無需手動介入。
-- **AES-256 密碼加密**：密碼以硬體裝置 ID 為基礎派生的金鑰加密後，儲存於 `EditorPrefs`，永不寫入專案檔案。
-- **非同步執行，不凍結編輯器**：SteamCMD 以子行程方式非同步執行，所有 stdout/stderr 串流即時顯示於 Unity Console 與視窗內建日誌區域，編輯器不會卡住。
-- **動態 VDF 生成**：自動產生 `app_build_{AppID}.vdf` 與 `depot_build_{DepotID}.vdf`，無需手動編寫。
-- **完整防呆機制**：路徑 Unicode 檢查、認證失敗即時偵測並終止程序、建置失敗自動中止上傳。
+- **一鍵部署**：點擊「Build & Upload to Steam」，系統自動完成 Unity 編譯 → 生成 VDF 腳本 → 執行 SteamCMD 上傳。
+- **AES-256 密碼加密**：密碼以硬體裝置 ID 為基礎的 AES-256 金鑰加密，儲存於系統登錄檔（`EditorPrefs`），永不寫入任何專案檔案。
+- **不凍結編輯器**：SteamCMD 以獨立子行程非同步執行，上傳期間編輯器完全可操作，日誌即時顯示。
+- **動態 VDF 生成**：自動產生 `app_build.vdf` 與 `depot_build.vdf`，無需手動編寫。
+- **完整防呆機制**：路徑 Unicode 檢查、認證失敗偵測並自動終止、建置失敗自動中止上傳。
 
 ---
 
 ## 系統需求
 
-| 項目 | 最低需求 |
+| 項目 | 最低版本 |
 |------|----------|
-| Unity 版本 | 2021.3 LTS 以上 |
-| 作業系統 | Windows 10 / macOS 12+ / Ubuntu 20.04+ |
-| SteamCMD | 最新版（從 Valve 官方下載） |
-| Steam 帳號 | 具有目標 AppID 發布權限的合作夥伴帳號 |
-| .NET | Unity 內建（4.x Scripting Runtime）|
+| Unity | 2021.3 LTS |
+| 作業系統 | Windows 10 / macOS 12 / Ubuntu 20.04 |
+| Steam 帳號 | 具有目標 AppID 發布權限的 [Steamworks 合作夥伴帳號](https://partner.steamgames.com/) |
 
 ---
 
-## 安裝方式
+## 第一步：安裝外掛程式（UPM，推薦）
 
-### 方式一：手動複製（推薦）
+> 這是最簡單的安裝方式，不需要手動複製任何檔案。
 
-1. 將整個 `Assets/Editor/SteamDeployer/` 資料夾複製到你的 Unity 專案的 `Assets/Editor/` 目錄下。
-2. 確認資料夾結構如下：
+1. 在 Unity 編輯器，開啟上方選單 **Window → Package Manager**。
+2. 點擊左上角的 **＋** 按鈕，選擇 **「Add package from git URL...」**。
+3. 貼上以下網址，按 **Add**：
 
 ```
-YourUnityProject/
-└── Assets/
-    └── Editor/
-        └── SteamDeployer/
-            ├── SteamDeployConfig.cs
-            ├── CryptographyHelper.cs
-            ├── VDFGenerator.cs
-            ├── SteamCmdProcessHandler.cs
-            └── SteamDeployWindow.cs
+https://github.com/qwe321qwe321qwe321/unity-steam-deployer.git
 ```
 
-3. 等待 Unity 重新編譯腳本（右下角進度條消失後）。
-4. 從選單開啟：**Tools → Steam Deployer → Open Window**。
+4. Unity 會自動下載並匯入所有腳本。完成後，上方選單會出現 **Tools → Steam Deployer → Open Window**。
 
-### 方式二：Unity Package Manager（UPM）
+> **若出現 "no git executable was found" 錯誤**：表示電腦尚未安裝 Git。
+> 前往 https://git-scm.com/download 下載安裝，安裝完畢後重新啟動 Unity 再試一次。
 
-將此 Repository 加入 UPM 的 Git URL 欄位：
-```
-https://github.com/YOUR_USERNAME/unity-steam-upload.git
-```
+### 替代方案：手動複製
+
+若不想使用 UPM，直接將整個 `Assets/Editor/SteamDeployer/` 資料夾複製到你的 Unity 專案的 `Assets/Editor/` 目錄下即可。
 
 ---
 
-## 初次設定流程
+## 第二步：下載並安裝 SteamCMD
 
-### 步驟 1：下載並安裝 SteamCMD
+SteamCMD 是 Valve 官方提供的命令列上傳工具，本外掛程式透過它將遊戲推送至 Steam。
 
-前往 Valve 官方說明頁面下載 SteamCMD：
-- Windows：解壓縮 `steamcmd.zip`，得到 `steamcmd.exe`。
-- macOS / Linux：依官方指示安裝。
+### Windows
 
-> **重要**：SteamCMD 的安裝路徑以及 Unity 專案路徑**不可包含非 ASCII 字元**（中文、日文、韓文、特殊符號等）。
-> 例如，路徑 `C:\遊戲工具\steamcmd\` 會導致 SteamCMD 以神秘的 Status 6 錯誤崩潰。
-> 建議路徑：`C:\steamcmd\steamcmd.exe`
+1. 點擊以下連結直接下載 ZIP 檔：
+   **[⬇ 下載 steamcmd.zip（Windows）](https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip)**
 
-### 步驟 2：建立設定資產（SteamDeployConfig）
+2. 建立資料夾 `C:\steamcmd\`（名稱和位置可自訂，但**路徑必須全為英文**，不可含中文或特殊符號）。
 
-1. 開啟 **Tools → Steam Deployer → Open Window**。
-2. 在「Configuration Asset」區塊中，點擊 **Create New Config Asset**。
-3. 系統會在 `Assets/Editor/SteamDeployer/SteamDeployConfig.asset` 建立設定檔。
-4. 這個 `.asset` 檔案可以提交到 Git，因為它**不包含任何敏感資訊**。
+3. 將 ZIP 內的 `steamcmd.exe` 解壓縮到 `C:\steamcmd\`。
 
-### 步驟 3：填寫 App 設定
+4. **雙擊執行一次** `steamcmd.exe`，讓它完成首次自我更新（會跑一堆下載，等它自動出現 `Steam>` 提示符後輸入 `quit` 關閉即可）。
 
-在視窗的「App Settings」區塊填寫以下資訊：
+   > 首次執行後，資料夾內會多出許多檔案，這是正常現象。
 
-| 欄位 | 說明 | 範例 |
-|------|------|------|
-| App ID | 你的 Steam 遊戲 AppID | `1234560` |
-| Depot ID | Steam Depot ID（通常為 AppID+1） | `1234561` |
-| Build Branch | 上傳後要設定為 live 的分支 | `default`、`beta` |
-| Build Description | 版本說明（支援 `{Version}` 和 `{Date}` 巨集） | `v{Version} - {Date}` |
-| Ignore Files | 排除上傳的檔案模式（逗號分隔） | `*.pdb, _BurstDebugInformation_DoNotShip` |
-| SteamCMD Path | steamcmd.exe 的完整路徑 | `C:\steamcmd\steamcmd.exe` |
+### macOS
 
-### 步驟 4：填寫認證資訊
+1. 點擊以下連結下載：
+   **[⬇ 下載 steamcmd_osx.tar.gz（macOS）](https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz)**
 
-在「Authentication」區塊：
+2. 開啟終端機，執行以下指令解壓縮並完成首次更新：
 
-1. 輸入 **Steam 使用者名稱**。
-2. 輸入 **密碼**（欄位顯示為遮罩，旁人無法偷看）。
-3. 若帳號有啟用 Steam Guard，先在 Steam App 或電子郵件取得驗證碼，填入 **Steam Guard Code** 欄位。
-4. 勾選「**Save credentials (AES-256)**」並點擊「**Save Now**」，密碼將以 AES-256 加密後儲存。
+   ```bash
+   mkdir ~/steamcmd && cd ~/steamcmd
+   tar zxvf ~/Downloads/steamcmd_osx.tar.gz
+   ./steamcmd.sh +quit
+   ```
 
-### 步驟 5：按下部署按鈕
+3. 完成後，`steamcmd.sh`（即 `steamcmd` 執行檔）位於 `~/steamcmd/` 資料夾。
 
-確認所有欄位填寫完畢後，點擊底部的大按鈕：
+### Linux（Ubuntu / Debian）
 
-```
-Build & Upload to Steam
-```
+開啟終端機，依序執行：
 
-系統將依序執行：
-1. ✅ 驗證所有設定
-2. 🔨 執行 Unity 建置（`BuildPipeline.BuildPlayer`）
-3. 📝 生成 VDF 腳本（寫入 `steamcmd/scripts/`）
-4. 🚀 啟動 SteamCMD 並上傳至 Steam
-5. 📋 即時顯示 SteamCMD 輸出日誌
-6. 🎉 顯示成功或失敗結果
+```bash
+# 安裝 32-bit 函式庫（SteamCMD 為 32-bit 執行檔）
+sudo apt-get install lib32gcc-s1 -y
 
----
+# 下載並解壓縮
+mkdir ~/steamcmd && cd ~/steamcmd
+curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf -
 
-## 密碼安全機制詳解
-
-本工具**絕不**以明文儲存密碼。加密流程如下：
-
-```
-AES-256 金鑰（32 bytes）= SHA-256( deviceUniqueIdentifier + 固定鹽值 )
-AES IV（16 bytes）       = MD5( deviceUniqueIdentifier + reversed(固定鹽值) )
-
-密文 = AES-256-CBC( 明文密碼, Key, IV )
-儲存 = EditorPrefs[ "SteamDeployer_EncryptedPassword" ] = Base64( 密文 )
-```
-
-- `SystemInfo.deviceUniqueIdentifier` 是硬體裝置的唯一識別碼，每台電腦都不同。
-- 因此，即使有人複製了你的 `EditorPrefs` 登錄檔，在另一台電腦上也**無法解密**。
-- 密碼**不會**寫入任何 `.asset`、`.json` 或 `.txt` 檔案，不會隨版本控制系統同步。
-
----
-
-## 非同步執行機制詳解
-
-SteamCMD 以子行程執行，若使用 `Process.WaitForExit()` 等待結束，將完全凍結 Unity 編輯器直到上傳完成（可能長達數十分鐘）。本工具採用以下非同步管線避免此問題：
-
-```
-SteamCMD stdout/stderr
-    ↓ OS 背景 ThreadPool（DataReceivedEventHandler）
-    ↓ ConcurrentQueue<LogEntry>（無鎖，執行緒安全）
-    ↓ EditorApplication.update → PumpMainThread()（Unity 主執行緒，每幀呼叫）
-    ↓ Debug.Log / Debug.LogError / Repaint（Unity API，只能在主執行緒呼叫）
+# 首次執行完成自我更新
+./steamcmd.sh +quit
 ```
 
 ---
 
-## VDF 腳本範例
+## 第三步：取得你的 AppID 與 DepotID
 
-成功執行後，以下檔案會自動生成於 `{steamcmd目錄}/scripts/`：
+> 若你已知道自己的 AppID 和 DepotID，可跳過此步驟。
 
-**`app_build_1234560.vdf`**
+1. 登入 [Steamworks 合作夥伴後台](https://partner.steamgames.com/apps)。
+2. 點擊你的遊戲，進入 **App Admin** 頁面，網址列的數字即為你的 **AppID**（例如 `1234560`）。
+3. 在 App Admin 頁面，點擊左側 **SteamPipe → Depots**，找到你的 Depot 項目，該數字即為 **DepotID**（通常為 AppID + 1，例如 `1234561`）。
+
+---
+
+## 第四步：開啟視窗並完成設定
+
+在 Unity 編輯器上方選單，點擊：
+
+**Tools → Steam Deployer → Open Window**
+
+### 4-1. 建立設定資產
+
+視窗頂部「Configuration Asset」區塊中，點擊 **「Create New Config Asset」**。
+系統會自動在 `Assets/Editor/SteamDeployer/SteamDeployConfig.asset` 建立設定檔。
+這個檔案**可以提交到 Git**，它不含任何密碼等敏感資訊。
+
+### 4-2. 填寫 App 設定
+
+「App Settings」區塊，依照以下說明填寫：
+
+| 欄位 | 填什麼 | 範例 |
+|------|--------|------|
+| **App ID** | 你的 Steam 遊戲 AppID | `1234560` |
+| **Depot ID** | 你的 Steam Depot ID | `1234561` |
+| **Build Branch** | 上傳後要 SetLive 的分支。預設主分支填 `default`；若要推到測試分支，填分支名稱 | `default` |
+| **Build Description** | 顯示在 Steamworks 後台的版本說明。支援 `{Version}`（自動帶入 Unity 的 `Application.version`）和 `{Date}`（自動帶入今天日期）巨集 | `v{Version} - {Date}` |
+| **Ignore Files** | 不想上傳的檔案模式，逗號分隔。預設值已包含常見的 debug 垃圾檔，通常不需要修改 | `*.pdb, _BurstDebugInformation_DoNotShip` |
+| **SteamCMD Path** | 點擊右側 **Browse…** 按鈕，找到並選取 `steamcmd.exe`（Windows）或 `steamcmd`（macOS/Linux） | `C:\steamcmd\steamcmd.exe` |
+
+### 4-3. 填寫認證資訊
+
+「Authentication」區塊：
+
+1. **Steam Username**：填入你的 Steam 開發者帳號的使用者名稱（不是顯示名稱，是登入帳號）。
+2. **Password**：填入密碼。欄位顯示為 `●●●●`，旁人無法看到。
+3. **Steam Guard Code**：
+   - 若帳號有開啟 **Steam Guard 電子郵件驗證**：開啟你的電子郵件，找到 Steam 寄來的驗證碼，填入此欄位。
+   - 若帳號有開啟 **Steam 行動裝置驗證器（Steam Mobile Authenticator）**：開啟手機 Steam App，在右下角點擊 **Steam Guard**，取得當前的 5 位數代碼，填入此欄位。
+   - 若帳號沒有開啟任何 Steam Guard：留空即可。
+
+4. 勾選 **「Save credentials (AES-256)」** 並點擊 **「Save Now」**：密碼會以 AES-256 加密後安全儲存，下次開啟視窗時會自動帶入，不需要重新輸入。
+
+> **Steam Guard 驗證碼的時效性**：每個驗證碼只能使用一次，且有效期約 30 秒（行動裝置）到數分鐘（電子郵件）。請確認填入後盡快點擊部署按鈕。
+
+---
+
+## 第五步：按下部署按鈕
+
+確認所有欄位填寫完畢，視窗底部的按鈕會變為可點擊狀態：
+
 ```
-"AppBuild"
-{
-    "AppID"         "1234560"
-    "Desc"          "v1.0.0 - 2026-03-16"
-    "Silent"        "0"
-    "Preview"       "0"
-    "ContentRoot"   "C:\\UnityProjects\\MyGame\\Temp\\SteamUploadOutput\\"
-    "BuildOutput"   "C:\\steamcmd\\logs\\"
-    "SetLive"       "default"
-    "Depots"
-    {
-        "1234561"   "C:\\steamcmd\\scripts\\depot_build_1234561.vdf"
-    }
-}
+┌─────────────────────────────────────────────────┐
+│                                                 │
+│         Build & Upload to Steam                 │
+│                                                 │
+└─────────────────────────────────────────────────┘
 ```
 
-**`depot_build_1234561.vdf`**
-```
-"DepotBuild"
-{
-    "DepotID"   "1234561"
-    "FileMapping"
-    {
-        "LocalPath"     "*"
-        "DepotPath"     "."
-        "Recursive"     "1"
-    }
-    "FileExclusion"     "*.pdb"
-    "FileExclusion"     "_BurstDebugInformation_DoNotShip"
-}
-```
+點擊後，系統自動依序執行：
+
+| 階段 | 說明 |
+|------|------|
+| ① 驗證設定 | 檢查所有欄位是否填寫完整、路徑是否合法、是否含非 ASCII 字元 |
+| ② Unity 建置 | 呼叫 `BuildPipeline.BuildPlayer`，使用當前的 Build Settings（場景、目標平台） |
+| ③ 生成 VDF | 自動寫出 `app_build.vdf` 與 `depot_build.vdf` 至 SteamCMD 的 `scripts/` 資料夾 |
+| ④ SteamCMD 上傳 | 啟動 SteamCMD 子行程，日誌即時顯示於視窗底部與 Unity Console |
+| ⑤ 顯示結果 | 成功顯示綠色橫幅，失敗顯示紅色橫幅並提示錯誤原因 |
 
 ---
 
 ## 常見問題排解
 
-### ❌ 按下按鈕後出現「Path Contains Non-ASCII Characters」
+### ❌ 錯誤：「Path Contains Non-ASCII Characters」
 
-**原因**：SteamCMD 的 C++ 核心對 Unicode 路徑支援極差。
-**解決**：將 SteamCMD 移至純 ASCII 路徑（如 `C:\steamcmd\`），並確保 Unity 專案路徑也不含中文或特殊字元。
+**原因**：SteamCMD 的底層 C++ 程式碼對 Unicode 路徑支援極差，中文、日文、韓文、特殊符號等字元都會導致它以神秘的 Status 6 或 Exit Code 5 錯誤崩潰。
 
----
+**解決方式**：
 
-### ❌ 出現「Steam Guard code required」錯誤
+- **SteamCMD 路徑**：將 `steamcmd.exe` 移至純英文路徑，例如：
+  - ✅ `C:\steamcmd\steamcmd.exe`
+  - ❌ `C:\遊戲工具\steamcmd.exe`
+  - ❌ `D:\Downloads\工具\Steam\steamcmd.exe`
 
-**原因**：帳號啟用了 Steam Guard 兩步驟驗證。
-**解決**：
-1. 查看手機 Steam App 或電子郵件取得最新驗證碼。
-2. 在「Steam Guard Code」欄位填入驗證碼。
-3. 重新點擊部署按鈕。
-
----
-
-### ❌ Unity Build Failed
-
-**原因**：Unity 建置本身發生錯誤（腳本錯誤、缺少場景等）。
-**解決**：查看 Unity Console 的紅色錯誤訊息，修正後重試。SteamCMD 上傳不會在建置失敗時執行。
+- **Unity 專案路徑**：確保整個 Unity 專案資料夾的路徑也不含中文或特殊字元：
+  - ✅ `D:\UnityProjects\MyGame\`
+  - ❌ `D:\我的專案\MyGame\`
 
 ---
 
-### ❌ SteamCMD 退出碼非 0
+### ❌ 錯誤：「Steam Guard code required」
 
-| 退出碼 | 常見原因 |
-|--------|---------|
-| `5`    | 路徑含非 ASCII 字元，或檔案權限問題 |
-| `6`    | AppID 或 Depot ID 設定錯誤 |
-| `8`    | 帳號沒有此 AppID 的發布權限 |
-| `63`   | 網路錯誤或 Steam 伺服器問題，稍後重試 |
+**原因**：帳號啟用了 Steam Guard，SteamCMD 需要驗證碼才能登入。
+
+**解決方式**：
+1. **電子郵件驗證**：查看 Steam 傳送的驗證碼 Email。
+2. **行動裝置驗證器**：打開手機 Steam App → 右下角 Steam Guard → 取得當前代碼。
+3. 將驗證碼填入視窗的「Steam Guard Code」欄位，重新點擊部署按鈕。
+
+> 每次 SteamCMD 從未知 IP 登入時都需要 Steam Guard 驗證碼。一旦成功登入一次，SteamCMD 會快取 session，之後相同機器通常不需要再填驗證碼。
 
 ---
 
-### ❌ 換電腦後密碼無法解密
+### ❌ 錯誤：「Invalid Password」
 
-**原因**：AES 金鑰以硬體裝置 ID 派生，換機後 ID 不同，舊密文無法解密。
-**解決**：這是預期行為（安全設計）。在新電腦上重新輸入密碼並勾選「Save Now」即可。
+**原因**：密碼錯誤，或帳號受到登入限制。
+
+**解決方式**：
+1. 確認密碼正確（可先在 [Steam 網頁](https://store.steampowered.com/login/) 測試登入）。
+2. 若密碼正確但仍失敗，帳號可能被暫時鎖定，等待 30 分鐘後再試。
+3. 若使用了「儲存憑證」功能，點擊「Clear Saved」清除後重新輸入密碼並儲存。
+
+---
+
+### ❌ Unity 建置失敗（Build Failed）
+
+**原因**：Unity 建置本身有錯誤，與本外掛無關。SteamCMD 上傳步驟不會在建置失敗時執行。
+
+**解決方式**：查看 Unity Console 的紅色錯誤訊息，修正後重試。常見原因：
+- C# 編譯錯誤
+- Build Settings 中沒有加入任何場景（前往 **File → Build Settings** 確認）
+- 目標平台尚未安裝對應的 Build Support Module
+
+---
+
+### ❌ SteamCMD 上傳失敗（非零退出碼）
+
+| 退出碼 | 意義 | 解決方式 |
+|--------|------|----------|
+| `5` | 路徑含非 ASCII 字元，或檔案存取權限不足 | 見上方 Non-ASCII 排解說明 |
+| `6` | AppID 或 DepotID 填寫錯誤 | 至 [Steamworks 後台](https://partner.steamgames.com/apps) 確認正確數值 |
+| `8` | 此帳號沒有目標 AppID 的發布權限 | 確認 Steam 帳號是該遊戲的 Admin 或 Developer |
+| `63` | 網路問題或 Steam 伺服器暫時不可用 | 稍後重試；可至 [Steam Status 頁面](https://www.steamstatus.com/) 確認伺服器狀態 |
+
+---
+
+### ❌ 換了一台電腦後，已儲存的密碼無法使用
+
+**原因**：這是預期的安全設計行為。AES-256 金鑰是從硬體裝置 ID 派生的，換機後裝置 ID 不同，無法解密在另一台機器上加密的密文。
+
+**解決方式**：在新電腦上，清除舊的加密資料（點擊「Clear Saved」），重新輸入密碼並勾選「Save Now」即可。
+
+---
+
+## 密碼安全機制說明
+
+本工具採用 **AES-256-CBC** 對稱加密，密碼永遠不會明文儲存於磁碟上的任何檔案。
+
+```
+金鑰派生：
+  AES Key (32 bytes) = SHA-256( 硬體裝置ID + 固定鹽值 )
+  AES IV  (16 bytes) = MD5( 硬體裝置ID + reversed(固定鹽值) )
+
+加密流程：
+  明文密碼 → AES-256-CBC 加密 → Base64 編碼 → EditorPrefs 儲存
+                                                （Windows 登錄檔 HKCU\Software\Unity Technologies\...）
+
+解密流程：
+  EditorPrefs 讀取 → Base64 解碼 → AES-256-CBC 解密 → 明文密碼（僅存於記憶體）
+```
+
+- 即使有人拷貝了你電腦的登錄檔，在另一台機器上也**無法解密**，因為硬體 ID 不同。
+- 密碼**不會**出現在任何 `.asset`、`.json`、`.txt` 或任何 Git 可追蹤的檔案中。
 
 ---
 
@@ -237,30 +274,33 @@ SteamCMD stdout/stderr
 ```
 Assets/Editor/SteamDeployer/
 │
-├── SteamDeployConfig.cs
-│   └── ScriptableObject：儲存非敏感設定（AppID、路徑、分支等）
-│
-├── CryptographyHelper.cs
-│   └── 靜態工具類：AES-256 加密/解密，管理 EditorPrefs 中的密文
-│
-├── VDFGenerator.cs
-│   └── 靜態工具類：動態生成 app_build 與 depot_build VDF 腳本並寫入磁碟
-│
-├── SteamCmdProcessHandler.cs
-│   └── 行程封裝類：啟動 steamcmd.exe、非同步 I/O 攔截、ConcurrentQueue 橋接
-│
-└── SteamDeployWindow.cs
-    └── EditorWindow：主視窗 UI、狀態機、部署協調器
+├── SteamDeployConfig.cs        ← ScriptableObject：儲存非敏感設定（AppID、路徑等）
+├── CryptographyHelper.cs       ← AES-256 加解密、EditorPrefs 密文管理
+├── VDFGenerator.cs             ← 動態生成 app_build.vdf 與 depot_build.vdf
+├── SteamCmdProcessHandler.cs   ← 封裝 Process、非同步 I/O、ConcurrentQueue 橋接
+└── SteamDeployWindow.cs        ← 主視窗 UI、狀態機（Setup/Building/Uploading/Success/Failed）
 ```
+
+### 非同步執行架構
+
+```
+SteamCMD stdout/stderr
+    │
+    ▼  OS 背景 ThreadPool（DataReceivedEventHandler）
+ConcurrentQueue<LogEntry>          ← 唯一跨執行緒的資料交換點（lock-free）
+    │
+    ▼  EditorApplication.update（Unity 主執行緒，每幀呼叫）
+PumpMainThread()
+    │
+    ├─→ OnLogLine    → Debug.Log       + 視窗日誌緩衝區
+    ├─→ OnErrorLine  → Debug.LogError  + 視窗日誌緩衝區
+    └─→ OnAuthFailure → Kill Process   + 彈出引導對話框
+```
+
+> 永遠不使用 `Process.WaitForExit()`，因為它會凍結 Unity 主執行緒直到 SteamCMD 結束。
 
 ---
 
 ## 授權
 
-MIT License — 詳見 [LICENSE](LICENSE) 檔案。
-
----
-
-## 貢獻
-
-歡迎提交 Issue 或 Pull Request。請確保所有變更在 Unity 2021.3 LTS 環境下可編譯，且不引入任何 Runtime Assembly 依賴（本工具應嚴格限於 `Editor` 環境）。
+MIT License
