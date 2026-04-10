@@ -126,6 +126,35 @@ namespace SteamDeployer
 		// ─── Public API ───────────────────────────────────────────────────────────
 
 		/// <summary>
+		/// Returns a human-readable description for a known steamcmd exit code.
+		/// Exit codes are not officially documented by Valve; these descriptions are derived
+		/// from community reports and observed behaviour across steamcmd versions.
+		/// </summary>
+		/// <param name="exitCode">The exit code returned by steamcmd.exe.</param>
+		/// <returns>A short explanation string, or a generic fallback for unknown codes.</returns>
+		public static string DescribeExitCode(int exitCode)
+		{
+			switch (exitCode)
+			{
+				case 0:  return "Success.";
+				case 1:  return "Unknown / general error.";
+				case 2:  return "Steam session error — already logged in elsewhere, or generic login failure.";
+				case 3:  return "No connection to the Steam network. Check your internet connection.";
+				case 4:  return "Connection timeout or invalid command-line argument.";
+				case 5:  return "Steam API / SDK initialisation failed.";
+				case 6:  return "Build commit failed. Content was uploaded but could not be finalised. " +
+				                "Common causes: (1) the SetLive branch requires Valve review before going live " +
+				                "(new apps must pass the Steam review queue before 'default' can be set); " +
+				                "(2) the branch name does not exist or you lack permission to set it live; " +
+				                "(3) a transient Valve server error — retry in a few minutes.";
+				case 7:  return "Too many failed login attempts. Wait before retrying.";
+				case 8:  return "Rate limit exceeded — too many steamcmd operations in a short period. Wait and retry.";
+				case 42: return "Rate limit exceeded (Valve-side throttle). Wait several minutes before retrying.";
+				default: return $"Undocumented exit code {exitCode}. Check the steamcmd log in the logs/ folder for details.";
+			}
+		}
+
+		/// <summary>
 		/// Constructs the argument string for a full build-and-upload steamcmd.exe run.
 		/// If a Steam Guard code is provided it is injected via +set_steam_guard_code before +login.
 		/// </summary>

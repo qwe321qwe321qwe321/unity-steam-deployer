@@ -28,10 +28,11 @@ namespace SteamDeployer
         /// <param name="config">Deployment configuration (AppID, DepotID, branch, etc.).</param>
         /// <param name="buildOutputPath">Absolute path to the Unity build output folder.</param>
         /// <param name="resolvedDescription">Build description with macros already substituted.</param>
+        /// <param name="steamCmdAbsolutePath">Absolute path to steamcmd.exe (must be pre-resolved; relative paths are NOT accepted).</param>
         /// <returns>Absolute path to the generated app_build VDF file.</returns>
-        public static string GenerateVdfScripts(SteamDeployConfig config, string buildOutputPath, string resolvedDescription)
+        public static string GenerateVdfScripts(SteamDeployConfig config, string buildOutputPath, string resolvedDescription, string steamCmdAbsolutePath)
         {
-            string steamCmdDir  = Path.GetDirectoryName(config.SteamCmdPath);
+            string steamCmdDir  = Path.GetDirectoryName(steamCmdAbsolutePath);
             string scriptsDir   = Path.Combine(steamCmdDir, "scripts");
             string buildLogDir  = Path.Combine(steamCmdDir, "logs");
 
@@ -78,7 +79,8 @@ namespace SteamDeployer
             // BuildOutput: where SteamCMD writes its own build log chunks.
             sb.AppendLine($"\t\"BuildOutput\"\t\"{buildOutput}\"");
             // SetLive: the branch to promote the build to after upload. Empty string = no promotion.
-            sb.AppendLine($"\t\"SetLive\"\t\"{EscapeVdfValue(config.BuildBranch)}\"");
+            string setLiveBranch = config.SetLiveEnabled ? config.BuildBranch : "";
+            sb.AppendLine($"\t\"SetLive\"\t\"{EscapeVdfValue(setLiveBranch)}\"");
             // Depots: maps each DepotID to its corresponding depot build script.
             sb.AppendLine("\t\"Depots\"");
             sb.AppendLine("\t{");

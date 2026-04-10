@@ -299,11 +299,23 @@ namespace SteamDeployer
 				{
 					_config.AppID            = EditorGUILayout.TextField("App ID",            _config.AppID);
 					_config.DepotID          = EditorGUILayout.TextField("Depot ID",          _config.DepotID);
-					_config.BuildBranch      = EditorGUILayout.TextField("Build Branch",      _config.BuildBranch);
+					_config.SetLiveEnabled = EditorGUILayout.Toggle(
+						new GUIContent("Set Live After Upload",
+							"When enabled, the build is immediately promoted to the specified branch after upload. " +
+							"Disable for new apps awaiting Valve review, or to promote manually from Steamworks."),
+						_config.SetLiveEnabled);
+
+					using (new EditorGUI.DisabledScope(!_config.SetLiveEnabled))
+					{
+						_config.BuildBranch = EditorGUILayout.TextField(
+							new GUIContent("Branch",
+								"The Steam branch to promote after upload (e.g. 'default', 'beta', 'staging')."),
+							_config.BuildBranch);
+					}
 					_config.BuildDescription = EditorGUILayout.TextField("Build Description", _config.BuildDescription);
 
 					EditorGUILayout.HelpBox(
-						"Description supports {Version} and {Date} macros.",
+						"Description supports {Version}, {Date}, {DateTime} macros.",
 						MessageType.None);
 
 					_config.IgnoreFiles = EditorGUILayout.TextField(
@@ -576,7 +588,7 @@ namespace SteamDeployer
 			try
 			{
 				string desc = ResolveMacros(_config.BuildDescription);
-				appVdfPath  = VDFGenerator.GenerateVdfScripts(_config, buildOutputPath, desc);
+				appVdfPath  = VDFGenerator.GenerateVdfScripts(_config, buildOutputPath, desc, ResolveSteamCmdPath());
 				AppendLog($"VDF scripts written. App VDF: {appVdfPath}", isError: false);
 			}
 			catch (Exception ex)
@@ -696,13 +708,15 @@ namespace SteamDeployer
 			}
 			else
 			{
+				string exitCodeDescription = SteamCmdProcessHandler.DescribeExitCode(exitCode);
 				string failLabel = _isTestLoginContext
 					? $"Login test failed (exit code {exitCode})."
 					: $"SteamCMD exited with code {exitCode}.";
 
 				SetFailedState(failLabel);
-				Debug.LogError($"[SteamDeployer] SteamCMD exited with code {exitCode}.");
+				Debug.LogError($"[SteamDeployer] SteamCMD exited with code {exitCode}. {exitCodeDescription}");
 				AppendLog($"=== {(_isTestLoginContext ? "LOGIN TEST" : "UPLOAD")} FAILED (exit code {exitCode}) ===", isError: true);
+				AppendLog($"Exit code {exitCode}: {exitCodeDescription}", isError: true);
 			}
 
 			Repaint();
@@ -933,7 +947,8 @@ namespace SteamDeployer
 			if (string.IsNullOrEmpty(template)) return "Unity Build";
 			return template
 				.Replace("{Version}", Application.version)
-				.Replace("{Date}",    DateTime.Now.ToString("yyyy-MM-dd"));
+				.Replace("{Date}",    DateTime.Now.ToString("yyyy-MM-dd"))
+				.Replace("{DateTime}",    DateTime.Now.ToString("yyyy-MM-dd-hh-mm-ss"));
 		}
 
 		private static string GetExeExtension(BuildTarget target)
