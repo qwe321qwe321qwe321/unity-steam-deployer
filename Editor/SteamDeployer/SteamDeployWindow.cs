@@ -1,5 +1,8 @@
 using System;
 using System.IO;
+using System.IO.Compression;
+using System.Net;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
@@ -45,9 +48,17 @@ namespace SteamDeployer
 
 		// ─── Config & runtime credentials ────────────────────────────────────────
 
+		private const string USERNAME_PREFS_KEY = "SteamDeployer_Username";
+
 		private SteamDeployConfig _config;
+		private string            _username        = "";
 		private string            _password        = "";
 		private bool              _saveCredentials = false;
+
+		// ─── SteamCMD download state ──────────────────────────────────────────────
+
+		private bool _isDownloadingSteamCmd = false;
+		private bool _steamCmdFileExists    = false;
 
 		// ─── Steam Guard code flow ────────────────────────────────────────────────
 
@@ -76,8 +87,9 @@ namespace SteamDeployer
 
 		// ─── Embedded log buffer ──────────────────────────────────────────────────
 
-		private string  _logBuffer = "";
+		private string  _logBuffer  = "";
 		private Vector2 _logScroll;
+		private Vector2 _mainScroll;
 
 		/// <summary>
 		/// Maximum number of characters retained in the embedded log buffer.
@@ -110,6 +122,9 @@ namespace SteamDeployer
 		private void OnEnable()
 		{
 			TryLoadConfig();
+			RefreshSteamCmdExists();
+
+			_username = EditorPrefs.GetString(USERNAME_PREFS_KEY, "");
 
 			if (CryptographyHelper.HasStoredPassword())
 			{
@@ -118,6 +133,11 @@ namespace SteamDeployer
 			}
 
 			EditorApplication.update += OnEditorUpdate;
+		}
+
+		private void OnFocus()
+		{
+			RefreshSteamCmdExists();
 		}
 
 		private void OnDisable()
@@ -166,6 +186,8 @@ namespace SteamDeployer
 		{
 			EnsureStyles();
 
+			_mainScroll = EditorGUILayout.BeginScrollView(_mainScroll);
+
 			EditorGUILayout.Space(6);
 			EditorGUILayout.LabelField("  Steam Deployer", EditorStyles.largeLabel);
 			EditorGUILayout.LabelField("  Automated Build & Upload via SteamCMD", EditorStyles.miniLabel);
@@ -186,6 +208,8 @@ namespace SteamDeployer
 			DrawExecutionSection(locked);
 			DrawLogSection();
 			DrawResultBanner();
+
+			EditorGUILayout.EndScrollView();
 		}
 
 		// ─── Section: Config asset ────────────────────────────────────────────────
@@ -220,8 +244,12 @@ namespace SteamDeployer
 			{
 				EditorGUILayout.LabelField("Authentication", EditorStyles.boldLabel);
 
-				if (_config != null)
-					_config.SteamUsername = EditorGUILayout.TextField("Steam Username", _config.SteamUsername);
+				using (var check = new EditorGUI.ChangeCheckScope())
+				{
+					_username = EditorGUILayout.TextField("Steam Username", _username);
+					if (check.changed)
+						EditorPrefs.SetString(USERNAME_PREFS_KEY, _username);
+				}
 
 				_password = EditorGUILayout.PasswordField("Password", _password);
 
@@ -260,7 +288,7 @@ namespace SteamDeployer
 				EditorGUILayout.Space(6);
 
 				bool canTestLogin = _config != null
-				    && !string.IsNullOrWhiteSpace(_config.SteamUsername)
+				    && !string.IsNullOrWhiteSpace(_username)
 				    && !string.IsNullOrWhiteSpace(_password)
 				    && !string.IsNullOrWhiteSpace(_config.SteamCmdPath);
 
@@ -331,17 +359,70 @@ namespace SteamDeployer
 						_config.SteamCmdPath = EditorGUILayout.TextField(_config.SteamCmdPath);
 						if (GUILayout.Button("Browse…", GUILayout.Width(72)))
 						{
-							string path = EditorUtility.OpenFilePanel("Locate steamcmd.exe", "", "exe");
-							if (!string.IsNullOrEmpty(path))
-								_config.SteamCmdPath = NormalizeSteamCmdPath(path);
+							string browsedPath = EditorUtility.OpenFilePanel("Locate steamcmd.exe", "", "exe");
+							if (!string.IsNullOrEmpty(browsedPath))
+							{
+								_config.SteamCmdPath = NormalizeSteamCmdPath(browsedPath);
+								RefreshSteamCmdExists();
+								EditorUtility.SetDirty(_config);
+								AssetDatabase.SaveAssets();
+							}
 						}
 					}
 
 					if (check.changed)
 					{
+						RefreshSteamCmdExists();
 						EditorUtility.SetDirty(_config);
 						AssetDatabase.SaveAssets();
 					}
+				}
+
+				// ── Download button (shown when path is empty or file not found) ─────
+				if (string.IsNullOrWhiteSpace(_config.SteamCmdPath) || !_steamCmdFileExists)
+				{
+					EditorGUILayout.Space(2);
+					using (new EditorGUI.DisabledScope(_isDownloadingSteamCmd))
+					{
+						string downloadLabel = _isDownloadingSteamCmd ? "Downloading…" : "Download & Install";
+						if (GUILayout.Button(new GUIContent(downloadLabel,
+								"Downloads steamcmd.zip from Valve and extracts it to the steamcmd/ folder " +
+								"at the project root, then launches it once so it can self-update."),
+								GUILayout.Height(26)))
+						{
+							DownloadAndInstallSteamCmd();
+						}
+					}
+
+					string helpMessage;
+					if (_isDownloadingSteamCmd)
+						helpMessage = "Downloading SteamCMD from Valve — please wait…";
+					else if (!string.IsNullOrWhiteSpace(_config.SteamCmdPath) && !_steamCmdFileExists)
+						helpMessage = "steamcmd.exe not found at the configured path. Click Download & Install to fetch it, or use Browse to locate an existing installation.";
+					else
+						helpMessage = "No SteamCMD path configured. Click Download & Install to fetch it automatically, or use Browse to locate an existing installation.";
+
+					EditorGUILayout.HelpBox(helpMessage, _isDownloadingSteamCmd ? MessageType.Info : MessageType.Warning);
+				}
+				else
+				{
+					// ── .gitignore check (shown when steamcmd is inside the project) ──
+					string resolvedSteamCmdDir = Path.GetDirectoryName(ResolveSteamCmdPath());
+					if (!string.IsNullOrEmpty(resolvedSteamCmdDir) && IsSteamCmdInsideProject(resolvedSteamCmdDir))
+					{
+						string gitignorePath = Path.Combine(resolvedSteamCmdDir, ".gitignore");
+						if (!File.Exists(gitignorePath))
+						{
+							EditorGUILayout.HelpBox(
+								"steamcmd is inside your project but has no .gitignore — " +
+								"its runtime files may be accidentally committed to version control.",
+								MessageType.Warning);
+							EditorGUILayout.Space(2);
+							if (GUILayout.Button("Add .gitignore", GUILayout.Height(24)))
+								WriteGitignoreForSteamCmd(resolvedSteamCmdDir);
+						}
+					}
+
 				}
 			}
 			EditorGUILayout.Space(3);
@@ -410,14 +491,14 @@ namespace SteamDeployer
 					    && !string.IsNullOrWhiteSpace(_config.AppID)
 					    && !string.IsNullOrWhiteSpace(_config.DepotID)
 					    && !string.IsNullOrWhiteSpace(_config.SteamCmdPath)
-					    && !string.IsNullOrWhiteSpace(_config.SteamUsername)
+					    && !string.IsNullOrWhiteSpace(_username)
 					    && !string.IsNullOrWhiteSpace(_password);
 
 					using (new EditorGUI.DisabledScope(!canDeploy))
 					{
 						EditorGUILayout.Space(8);
 						if (GUILayout.Button("Build & Upload to Steam", _bigButtonStyle, GUILayout.Height(52)))
-							StartDeployment();
+							EditorApplication.delayCall += StartDeployment;
 						EditorGUILayout.Space(8);
 					}
 
@@ -506,7 +587,7 @@ namespace SteamDeployer
 			string password      = GetEffectivePassword();
 			string resolvedPath  = ResolveSteamCmdPath();
 			string args          = SteamCmdProcessHandler.BuildTestLoginArguments(
-				_config.SteamUsername, password, steamGuardCode);
+				_username, password, steamGuardCode);
 
 			_processHandler = CreateAndWireProcessHandler();
 
@@ -514,7 +595,7 @@ namespace SteamDeployer
 			_taskLabel     = "Testing Steam login...";
 			_progressValue = 0.5f;
 
-			AppendLog($"Testing login for: {_config.SteamUsername}", isError: false);
+			AppendLog($"Testing login for: {_username}", isError: false);
 
 			_isProcessRunning = true;
 
@@ -616,7 +697,7 @@ namespace SteamDeployer
 			string password     = GetEffectivePassword();
 			string resolvedPath = ResolveSteamCmdPath();
 			string args         = SteamCmdProcessHandler.BuildArguments(
-				_config.SteamUsername, password, steamGuardCode, appVdfPath);
+				_username, password, steamGuardCode, appVdfPath);
 
 			_processHandler = CreateAndWireProcessHandler();
 
@@ -824,7 +905,7 @@ namespace SteamDeployer
 				return false;
 			}
 
-			if (string.IsNullOrWhiteSpace(_config.SteamUsername) || string.IsNullOrWhiteSpace(_password))
+			if (string.IsNullOrWhiteSpace(_username) || string.IsNullOrWhiteSpace(_password))
 			{
 				EditorUtility.DisplayDialog("Credentials Missing",
 					"Please enter your Steam username and password.", "OK");
@@ -877,7 +958,7 @@ namespace SteamDeployer
 				return false;
 			}
 
-			if (string.IsNullOrWhiteSpace(_config.SteamUsername) || string.IsNullOrWhiteSpace(_password))
+			if (string.IsNullOrWhiteSpace(_username) || string.IsNullOrWhiteSpace(_password))
 			{
 				EditorUtility.DisplayDialog("Credentials Missing",
 					"Please enter your Steam username and password.", "OK");
@@ -915,6 +996,11 @@ namespace SteamDeployer
 			}
 
 			return absolutePath;
+		}
+
+		private void RefreshSteamCmdExists()
+		{
+			_steamCmdFileExists = File.Exists(ResolveSteamCmdPath());
 		}
 
 		/// <summary>
@@ -1099,6 +1185,118 @@ namespace SteamDeployer
 			tex.SetPixel(0, 0, color);
 			tex.Apply();
 			return tex;
+		}
+
+		// ─── SteamCMD download & gitignore helpers ────────────────────────────────
+
+		/// <summary>
+		/// Downloads steamcmd.zip from Valve into the project-root steamcmd/ folder,
+		/// extracts it in-place, and then launches steamcmd.exe once so it can self-update.
+		/// All I/O runs on a background thread; the result is applied on the main thread
+		/// via EditorApplication.delayCall.
+		/// </summary>
+		private void DownloadAndInstallSteamCmd()
+		{
+			string projectRoot    = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+			string steamCmdDir    = Path.Combine(projectRoot, "steamcmd");
+			string zipPath        = Path.Combine(steamCmdDir, "steamcmd_download.zip");
+			string steamCmdExePath = Path.Combine(steamCmdDir, "steamcmd.exe");
+
+			Directory.CreateDirectory(steamCmdDir);
+			_isDownloadingSteamCmd = true;
+			Repaint();
+
+			Task.Run(() =>
+			{
+				using (var webClient = new WebClient())
+				{
+					webClient.DownloadFile(
+						"https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip",
+						zipPath);
+				}
+
+				using (var archive = ZipFile.OpenRead(zipPath))
+				{
+					foreach (ZipArchiveEntry entry in archive.Entries)
+					{
+						string destinationPath = Path.GetFullPath(Path.Combine(steamCmdDir, entry.FullName));
+						if (entry.Name == "")
+						{
+							Directory.CreateDirectory(destinationPath);
+							continue;
+						}
+						Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
+						entry.ExtractToFile(destinationPath, overwrite: true);
+					}
+				}
+
+				File.Delete(zipPath);
+			}).ContinueWith(downloadTask =>
+			{
+				EditorApplication.delayCall += () =>
+				{
+					_isDownloadingSteamCmd = false;
+
+					if (downloadTask.IsFaulted)
+					{
+						string errorMessage = downloadTask.Exception?.GetBaseException()?.Message ?? "Unknown error";
+						Debug.LogError($"[SteamDeployer] SteamCMD download failed: {errorMessage}");
+						EditorUtility.DisplayDialog("Download Failed",
+							$"Failed to download SteamCMD:\n{errorMessage}", "OK");
+						Repaint();
+						return;
+					}
+
+					if (_config != null)
+					{
+						_config.SteamCmdPath = NormalizeSteamCmdPath(steamCmdExePath.Replace('\\', '/'));
+						RefreshSteamCmdExists();
+						EditorUtility.SetDirty(_config);
+						AssetDatabase.SaveAssets();
+					}
+
+					Debug.Log($"[SteamDeployer] SteamCMD installed to: {steamCmdDir}");
+					AppendLog($"SteamCMD installed → {steamCmdDir}", isError: false);
+
+					// Launch once so steamcmd can self-update and initialize its local data.
+					System.Diagnostics.Process.Start(steamCmdExePath);
+
+					Repaint();
+				};
+			});
+		}
+
+		/// <summary>
+		/// Writes a .gitignore to the given steamcmd directory that excludes all
+		/// runtime-generated files while keeping the .gitignore itself tracked.
+		/// </summary>
+		private static void WriteGitignoreForSteamCmd(string steamCmdDir)
+		{
+			string gitignorePath = Path.Combine(steamCmdDir, ".gitignore");
+			const string content =
+				"# SteamCMD runtime data — all files here are auto-downloaded or generated on first run.\n" +
+				"# None of these should be committed to version control.\n" +
+				"# Teammates can fetch SteamCMD via Tools > Steam Deployer > Open Window.\n" +
+				"*\n" +
+				"!.gitignore\n";
+
+			File.WriteAllText(gitignorePath, content);
+			Debug.Log($"[SteamDeployer] .gitignore written to: {gitignorePath}");
+			EditorUtility.DisplayDialog("Done",
+				$".gitignore created at:\n{gitignorePath}\n\n" +
+				"All SteamCMD runtime files are now excluded from version control.",
+				"OK");
+		}
+
+		/// <summary>
+		/// Returns true when the given absolute directory path falls inside the Unity project root.
+		/// Used to decide whether to offer the .gitignore helper.
+		/// </summary>
+		private static bool IsSteamCmdInsideProject(string absoluteDirPath)
+		{
+			if (string.IsNullOrEmpty(absoluteDirPath)) return false;
+			string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+			return absoluteDirPath.StartsWith(projectRoot, StringComparison.OrdinalIgnoreCase);
 		}
 	}
 }

@@ -30,9 +30,6 @@ namespace SteamDeployer
                  "WARNING: Path must contain only ASCII characters (no CJK, accents, etc.).")]
         public string SteamCmdPath = "";
 
-        [Tooltip("Your Steam developer account username (the account with publishing rights for this AppID).")]
-        public string SteamUsername = "";
-
         [Tooltip("Comma-separated glob patterns for files to exclude from the depot upload. " +
                  "Example: *.pdb, _BurstDebugInformation_DoNotShip, *.lib")]
         public string IgnoreFiles = "*.pdb, _BurstDebugInformation_DoNotShip";
