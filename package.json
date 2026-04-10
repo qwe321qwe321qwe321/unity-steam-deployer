@@ -2,7 +2,7 @@
   "name": "com.steamdeployer.unity",
   "version": "1.0.0",
   "displayName": "Steam Deployer",
-  "description": "保母級一鍵 Unity 建置並上傳至 Steam 的 Editor 外掛程式。支援 AES-256 密碼加密、動態 VDF 生成、非同步 SteamCMD 執行。",
+  "description": "Unity Editor tool that builds and uploads to Steam via SteamCMD. Generates VDF scripts dynamically, encrypts credentials with AES-256, and runs SteamCMD asynchronously without blocking the Editor.",
   "unity": "2021.3",
   "type": "tool",
   "keywords": [
