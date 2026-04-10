@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
+using System.Reflection;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
@@ -54,6 +55,16 @@ namespace SteamDeployer
 		private string            _username        = "";
 		private string            _password        = "";
 		private bool              _saveCredentials = false;
+
+		// ─── Section fold states ─────────────────────────────────────────────────
+
+		private bool _authFoldout        = true;
+		private bool _appSettingsFoldout = true;
+
+		// ─── Build profile (Unity 6+) ─────────────────────────────────────────────
+#if UNITY_6000_0_OR_NEWER
+		private UnityEditor.Build.Profile.BuildProfile _buildProfile;
+#endif
 
 		// ─── SteamCMD download state ──────────────────────────────────────────────
 
@@ -132,6 +143,18 @@ namespace SteamDeployer
 				_saveCredentials = true;
 			}
 
+			// Default Auth section expanded if either credential is missing.
+			bool authHasValues = !string.IsNullOrWhiteSpace(_username)
+			                  && !string.IsNullOrWhiteSpace(_password);
+			_authFoldout = !authHasValues;
+
+			// Default App Settings expanded if any required field is missing.
+			bool appSettingsHasValues = _config != null
+			    && !string.IsNullOrWhiteSpace(_config.AppID)
+			    && !string.IsNullOrWhiteSpace(_config.DepotID)
+			    && !string.IsNullOrWhiteSpace(_config.SteamCmdPath);
+			_appSettingsFoldout = !appSettingsHasValues;
+
 			EditorApplication.update += OnEditorUpdate;
 		}
 
@@ -205,9 +228,9 @@ namespace SteamDeployer
 				DrawAppSettingsSection();
 			}
 
-			DrawExecutionSection(locked);
-			DrawLogSection();
+			DrawBuildAndUploadSection(locked);
 			DrawResultBanner();
+			DrawLogSection();
 
 			EditorGUILayout.EndScrollView();
 		}
@@ -242,72 +265,81 @@ namespace SteamDeployer
 		{
 			using (new GUILayout.VerticalScope(_boxStyle))
 			{
-				EditorGUILayout.LabelField("Authentication", EditorStyles.boldLabel);
-
-				using (var check = new EditorGUI.ChangeCheckScope())
+				_authFoldout = EditorGUILayout.Foldout(_authFoldout, "Authentication", true, EditorStyles.foldoutHeader);
+				if (!_authFoldout)
 				{
-					_username = EditorGUILayout.TextField("Steam Username", _username);
-					if (check.changed)
-						EditorPrefs.SetString(USERNAME_PREFS_KEY, _username);
+					if (!string.IsNullOrWhiteSpace(_username))
+						EditorGUILayout.LabelField($"  Logged in as: {_username}", EditorStyles.miniLabel);
 				}
-
-				_password = EditorGUILayout.PasswordField("Password", _password);
-
-				EditorGUILayout.Space(4);
-
-				bool prevSave = _saveCredentials;
-				_saveCredentials = EditorGUILayout.Toggle(
-					new GUIContent("Save credentials (AES-256)",
-						"Encrypts the password with your machine's hardware ID and stores it in EditorPrefs."),
-					_saveCredentials);
-
-				if (prevSave && !_saveCredentials)
-					CryptographyHelper.ClearStoredPassword();
-
-				if (_saveCredentials)
+				else
 				{
-					using (new GUILayout.HorizontalScope())
+					EditorGUILayout.Space(4);
+
+					using (var check = new EditorGUI.ChangeCheckScope())
 					{
-						GUILayout.FlexibleSpace();
-						if (GUILayout.Button("Save Now", GUILayout.Width(100)))
+						_username = EditorGUILayout.TextField("Steam Username", _username);
+						if (check.changed)
+							EditorPrefs.SetString(USERNAME_PREFS_KEY, _username);
+					}
+
+					_password = EditorGUILayout.PasswordField("Password", _password);
+
+					EditorGUILayout.Space(4);
+
+					bool prevSave = _saveCredentials;
+					_saveCredentials = EditorGUILayout.Toggle(
+						new GUIContent("Save credentials (AES-256)",
+							"Encrypts the password with your machine's hardware ID and stores it in EditorPrefs."),
+						_saveCredentials);
+
+					if (prevSave && !_saveCredentials)
+						CryptographyHelper.ClearStoredPassword();
+
+					if (_saveCredentials)
+					{
+						using (new GUILayout.HorizontalScope())
 						{
-							CryptographyHelper.SaveEncryptedPassword(_password);
-							EditorUtility.DisplayDialog("Saved",
-								"Password encrypted with AES-256 and stored in EditorPrefs.\n" +
-								"It is only decryptable on this machine.", "OK");
+							GUILayout.FlexibleSpace();
+							if (GUILayout.Button("Save Now", GUILayout.Width(100)))
+							{
+								CryptographyHelper.SaveEncryptedPassword(_password);
+								EditorUtility.DisplayDialog("Saved",
+									"Password encrypted with AES-256 and stored in EditorPrefs.\n" +
+									"It is only decryptable on this machine.", "OK");
+							}
+							if (GUILayout.Button("Clear Saved", GUILayout.Width(100)))
+								CryptographyHelper.ClearStoredPassword();
 						}
-						if (GUILayout.Button("Clear Saved", GUILayout.Width(100)))
-							CryptographyHelper.ClearStoredPassword();
+
+						if (CryptographyHelper.HasStoredPassword())
+							EditorGUILayout.HelpBox("Encrypted password stored for this machine.", MessageType.Info);
 					}
 
-					if (CryptographyHelper.HasStoredPassword())
-						EditorGUILayout.HelpBox("Encrypted password stored for this machine.", MessageType.Info);
-				}
+					// ── Test Login ────────────────────────────────────────────────────
+					EditorGUILayout.Space(6);
 
-				// ── Test Login ────────────────────────────────────────────────────
-				EditorGUILayout.Space(6);
+					bool canTestLogin = _config != null
+					    && !string.IsNullOrWhiteSpace(_username)
+					    && !string.IsNullOrWhiteSpace(_password)
+					    && !string.IsNullOrWhiteSpace(_config.SteamCmdPath);
 
-				bool canTestLogin = _config != null
-				    && !string.IsNullOrWhiteSpace(_username)
-				    && !string.IsNullOrWhiteSpace(_password)
-				    && !string.IsNullOrWhiteSpace(_config.SteamCmdPath);
-
-				using (new EditorGUI.DisabledScope(!canTestLogin))
-				{
-					if (GUILayout.Button(
-						    new GUIContent("Test Login",
-							    "Runs steamcmd.exe with +login only (no build or upload) to verify your credentials."),
-						    GUILayout.Height(28)))
+					using (new EditorGUI.DisabledScope(!canTestLogin))
 					{
-						StartTestLogin();
+						if (GUILayout.Button(
+							    new GUIContent("Test Login",
+								    "Runs steamcmd.exe with +login only (no build or upload) to verify your credentials."),
+							    GUILayout.Height(28)))
+						{
+							StartTestLogin();
+						}
 					}
-				}
 
-				if (!canTestLogin)
-				{
-					EditorGUILayout.HelpBox(
-						"Fill in username, password, and SteamCMD path to enable Test Login.",
-						MessageType.None);
+					if (!canTestLogin)
+					{
+						EditorGUILayout.HelpBox(
+							"Fill in username, password, and SteamCMD path to enable Test Login.",
+							MessageType.None);
+					}
 				}
 			}
 			EditorGUILayout.Space(3);
@@ -321,116 +353,125 @@ namespace SteamDeployer
 
 			using (new GUILayout.VerticalScope(_boxStyle))
 			{
-				EditorGUILayout.LabelField("App Settings", EditorStyles.boldLabel);
+				_appSettingsFoldout = EditorGUILayout.Foldout(_appSettingsFoldout, "App Settings", true, EditorStyles.foldoutHeader);
 
-				using (var check = new EditorGUI.ChangeCheckScope())
+				if (!_appSettingsFoldout)
 				{
-					_config.AppID            = EditorGUILayout.TextField("App ID",            _config.AppID);
-					_config.DepotID          = EditorGUILayout.TextField("Depot ID",          _config.DepotID);
-					_config.SetLiveEnabled = EditorGUILayout.Toggle(
-						new GUIContent("Set Live After Upload",
-							"When enabled, the build is immediately promoted to the specified branch after upload. " +
-							"Disable for new apps awaiting Valve review, or to promote manually from Steamworks."),
-						_config.SetLiveEnabled);
-
-					using (new EditorGUI.DisabledScope(!_config.SetLiveEnabled))
-					{
-						_config.BuildBranch = EditorGUILayout.TextField(
-							new GUIContent("Branch",
-								"The Steam branch to promote after upload (e.g. 'default', 'beta', 'staging')."),
-							_config.BuildBranch);
-					}
-					_config.BuildDescription = EditorGUILayout.TextField("Build Description", _config.BuildDescription);
-
-					EditorGUILayout.HelpBox(
-						"Description supports {Version}, {Date}, {DateTime} macros.",
-						MessageType.None);
-
-					_config.IgnoreFiles = EditorGUILayout.TextField(
-						new GUIContent("Ignore Files",
-							"Comma-separated glob patterns excluded from the depot (e.g. *.pdb, *.lib)."),
-						_config.IgnoreFiles);
-
-					EditorGUILayout.Space(6);
-					EditorGUILayout.LabelField("SteamCMD Executable", EditorStyles.boldLabel);
-
-					using (new GUILayout.HorizontalScope())
-					{
-						_config.SteamCmdPath = EditorGUILayout.TextField(_config.SteamCmdPath);
-						if (GUILayout.Button("Browse…", GUILayout.Width(72)))
-						{
-							string browsedPath = EditorUtility.OpenFilePanel("Locate steamcmd.exe", "", "exe");
-							if (!string.IsNullOrEmpty(browsedPath))
-							{
-								_config.SteamCmdPath = NormalizeSteamCmdPath(browsedPath);
-								RefreshSteamCmdExists();
-								EditorUtility.SetDirty(_config);
-								AssetDatabase.SaveAssets();
-							}
-						}
-					}
-
-					if (check.changed)
-					{
-						RefreshSteamCmdExists();
-						EditorUtility.SetDirty(_config);
-						AssetDatabase.SaveAssets();
-					}
-				}
-
-				// ── Download button (shown when path is empty or file not found) ─────
-				if (string.IsNullOrWhiteSpace(_config.SteamCmdPath) || !_steamCmdFileExists)
-				{
-					EditorGUILayout.Space(2);
-					using (new EditorGUI.DisabledScope(_isDownloadingSteamCmd))
-					{
-						string downloadLabel = _isDownloadingSteamCmd ? "Downloading…" : "Download & Install";
-						if (GUILayout.Button(new GUIContent(downloadLabel,
-								"Downloads steamcmd.zip from Valve and extracts it to the steamcmd/ folder " +
-								"at the project root, then launches it once so it can self-update."),
-								GUILayout.Height(26)))
-						{
-							DownloadAndInstallSteamCmd();
-						}
-					}
-
-					string helpMessage;
-					if (_isDownloadingSteamCmd)
-						helpMessage = "Downloading SteamCMD from Valve — please wait…";
-					else if (!string.IsNullOrWhiteSpace(_config.SteamCmdPath) && !_steamCmdFileExists)
-						helpMessage = "steamcmd.exe not found at the configured path. Click Download & Install to fetch it, or use Browse to locate an existing installation.";
-					else
-						helpMessage = "No SteamCMD path configured. Click Download & Install to fetch it automatically, or use Browse to locate an existing installation.";
-
-					EditorGUILayout.HelpBox(helpMessage, _isDownloadingSteamCmd ? MessageType.Info : MessageType.Warning);
+					if (!string.IsNullOrWhiteSpace(_config.AppID))
+						EditorGUILayout.LabelField($"  App ID: {_config.AppID}  |  Depot ID: {_config.DepotID}", EditorStyles.miniLabel);
 				}
 				else
 				{
-					// ── .gitignore check (shown when steamcmd is inside the project) ──
-					string resolvedSteamCmdDir = Path.GetDirectoryName(ResolveSteamCmdPath());
-					if (!string.IsNullOrEmpty(resolvedSteamCmdDir) && IsSteamCmdInsideProject(resolvedSteamCmdDir))
+					EditorGUILayout.Space(4);
+
+					using (var check = new EditorGUI.ChangeCheckScope())
 					{
-						string gitignorePath = Path.Combine(resolvedSteamCmdDir, ".gitignore");
-						if (!File.Exists(gitignorePath))
+						_config.AppID   = EditorGUILayout.TextField("App ID",   _config.AppID);
+						_config.DepotID = EditorGUILayout.TextField("Depot ID", _config.DepotID);
+						_config.SetLiveEnabled = EditorGUILayout.Toggle(
+							new GUIContent("Set Live After Upload",
+								"When enabled, the build is immediately promoted to the specified branch after upload. " +
+								"Disable for new apps awaiting Valve review, or to promote manually from Steamworks."),
+							_config.SetLiveEnabled);
+
+						using (new EditorGUI.DisabledScope(!_config.SetLiveEnabled))
 						{
-							EditorGUILayout.HelpBox(
-								"steamcmd is inside your project but has no .gitignore — " +
-								"its runtime files may be accidentally committed to version control.",
-								MessageType.Warning);
-							EditorGUILayout.Space(2);
-							if (GUILayout.Button("Add .gitignore", GUILayout.Height(24)))
-								WriteGitignoreForSteamCmd(resolvedSteamCmdDir);
+							_config.BuildBranch = EditorGUILayout.TextField(
+								new GUIContent("Branch",
+									"The Steam branch to promote after upload (e.g. 'default', 'beta', 'staging')."),
+								_config.BuildBranch);
+						}
+						_config.BuildDescription = EditorGUILayout.TextField("Build Description", _config.BuildDescription);
+
+						EditorGUILayout.HelpBox(
+							"Description supports {Version}, {Date}, {DateTime} macros.",
+							MessageType.None);
+
+						_config.IgnoreFiles = EditorGUILayout.TextField(
+							new GUIContent("Ignore Files",
+								"Comma-separated glob patterns excluded from the depot (e.g. *.pdb, *.lib)."),
+							_config.IgnoreFiles);
+
+						EditorGUILayout.Space(6);
+						EditorGUILayout.LabelField("SteamCMD Executable", EditorStyles.boldLabel);
+
+						using (new GUILayout.HorizontalScope())
+						{
+							_config.SteamCmdPath = EditorGUILayout.TextField(_config.SteamCmdPath);
+							if (GUILayout.Button("Browse…", GUILayout.Width(72)))
+							{
+								string browsedPath = EditorUtility.OpenFilePanel("Locate steamcmd.exe", "", "exe");
+								if (!string.IsNullOrEmpty(browsedPath))
+								{
+									_config.SteamCmdPath = NormalizeSteamCmdPath(browsedPath);
+									RefreshSteamCmdExists();
+									EditorUtility.SetDirty(_config);
+									AssetDatabase.SaveAssets();
+								}
+							}
+						}
+
+						if (check.changed)
+						{
+							RefreshSteamCmdExists();
+							EditorUtility.SetDirty(_config);
+							AssetDatabase.SaveAssets();
 						}
 					}
 
+					// ── Download button (shown when path is empty or file not found) ─────
+					if (string.IsNullOrWhiteSpace(_config.SteamCmdPath) || !_steamCmdFileExists)
+					{
+						EditorGUILayout.Space(2);
+						using (new EditorGUI.DisabledScope(_isDownloadingSteamCmd))
+						{
+							string downloadLabel = _isDownloadingSteamCmd ? "Downloading…" : "Download & Install";
+							if (GUILayout.Button(new GUIContent(downloadLabel,
+									"Downloads steamcmd.zip from Valve and extracts it to the steamcmd/ folder " +
+									"at the project root, then launches it once so it can self-update."),
+									GUILayout.Height(26)))
+							{
+								DownloadAndInstallSteamCmd();
+							}
+						}
+
+						string helpMessage;
+						if (_isDownloadingSteamCmd)
+							helpMessage = "Downloading SteamCMD from Valve — please wait…";
+						else if (!string.IsNullOrWhiteSpace(_config.SteamCmdPath) && !_steamCmdFileExists)
+							helpMessage = "steamcmd.exe not found at the configured path. Click Download & Install to fetch it, or use Browse to locate an existing installation.";
+						else
+							helpMessage = "No SteamCMD path configured. Click Download & Install to fetch it automatically, or use Browse to locate an existing installation.";
+
+						EditorGUILayout.HelpBox(helpMessage, _isDownloadingSteamCmd ? MessageType.Info : MessageType.Warning);
+					}
+					else
+					{
+						// ── .gitignore check (shown when steamcmd is inside the project) ──
+						string resolvedSteamCmdDir = Path.GetDirectoryName(ResolveSteamCmdPath());
+						if (!string.IsNullOrEmpty(resolvedSteamCmdDir) && IsSteamCmdInsideProject(resolvedSteamCmdDir))
+						{
+							string gitignorePath = Path.Combine(resolvedSteamCmdDir, ".gitignore");
+							if (!File.Exists(gitignorePath))
+							{
+								EditorGUILayout.HelpBox(
+									"steamcmd is inside your project but has no .gitignore — " +
+									"its runtime files may be accidentally committed to version control.",
+									MessageType.Warning);
+								EditorGUILayout.Space(2);
+								if (GUILayout.Button("Add .gitignore", GUILayout.Height(24)))
+									WriteGitignoreForSteamCmd(resolvedSteamCmdDir);
+							}
+						}
+					}
 				}
 			}
 			EditorGUILayout.Space(3);
 		}
 
-		// ─── Section: Execution ───────────────────────────────────────────────────
+		// ─── Section: Build & Upload ─────────────────────────────────────────────
 
-		private void DrawExecutionSection(bool locked)
+		private void DrawBuildAndUploadSection(bool locked)
 		{
 			// ── Steam Guard prompt (overrides all other execution UI) ─────────────
 			if (_state == DeployState.WaitingForSteamGuard)
@@ -468,9 +509,11 @@ namespace SteamDeployer
 				return;
 			}
 
-			// ── Normal execution UI ───────────────────────────────────────────────
+			// ── Main Build & Upload UI ────────────────────────────────────────────
 			using (new GUILayout.VerticalScope(_boxStyle))
 			{
+				EditorGUILayout.LabelField("Build & Upload", EditorStyles.boldLabel);
+
 				if (locked)
 				{
 					EditorGUILayout.Space(6);
@@ -487,25 +530,108 @@ namespace SteamDeployer
 				}
 				else
 				{
-					bool canDeploy = _config != null
-					    && !string.IsNullOrWhiteSpace(_config.AppID)
-					    && !string.IsNullOrWhiteSpace(_config.DepotID)
-					    && !string.IsNullOrWhiteSpace(_config.SteamCmdPath)
-					    && !string.IsNullOrWhiteSpace(_username)
-					    && !string.IsNullOrWhiteSpace(_password);
+					// ── Build output path ─────────────────────────────────────────
+					EditorGUILayout.Space(4);
+					EditorGUILayout.LabelField("Build Output Path", EditorStyles.boldLabel);
 
-					using (new EditorGUI.DisabledScope(!canDeploy))
+					using (var check = new EditorGUI.ChangeCheckScope())
 					{
-						EditorGUILayout.Space(8);
-						if (GUILayout.Button("Build & Upload to Steam", _bigButtonStyle, GUILayout.Height(52)))
-							EditorApplication.delayCall += StartDeployment;
-						EditorGUILayout.Space(8);
+						using (new GUILayout.HorizontalScope())
+						{
+							string newPath = EditorGUILayout.TextField(_config != null ? _config.BuildOutputPath ?? "" : "");
+							if (_config != null) _config.BuildOutputPath = newPath;
+
+							using (new EditorGUI.DisabledScope(_config == null))
+							{
+								if (GUILayout.Button("Browse…", GUILayout.Width(72)))
+								{
+									string browsed = EditorUtility.OpenFolderPanel(
+										"Select Build Output Folder",
+										_config?.BuildOutputPath ?? "",
+										"");
+									if (!string.IsNullOrEmpty(browsed) && _config != null)
+									{
+										_config.BuildOutputPath = NormalizeBuildOutputPath(browsed);
+										EditorUtility.SetDirty(_config);
+										AssetDatabase.SaveAssets();
+									}
+								}
+							}
+						}
+						if (check.changed && _config != null)
+						{
+							EditorUtility.SetDirty(_config);
+							AssetDatabase.SaveAssets();
+						}
 					}
 
-					if (!canDeploy)
+					// ── Build Profile (Unity 6+) ──────────────────────────────────
+#if UNITY_6000_0_OR_NEWER
+					_buildProfile = (UnityEditor.Build.Profile.BuildProfile)EditorGUILayout.ObjectField(
+						new GUIContent("Build Profile",
+							"Optional: select a Build Profile asset to activate before building. " +
+							"Leave empty to use the current active build settings."),
+						_buildProfile,
+						typeof(UnityEditor.Build.Profile.BuildProfile),
+						allowSceneObjects: false);
+#endif
+
+					// ── Build / Upload buttons ────────────────────────────────────
+					EditorGUILayout.Space(8);
+
+					bool buildPathSet  = _config != null && !string.IsNullOrWhiteSpace(_config.BuildOutputPath);
+					bool uploadReady   = _config != null
+					                 && !string.IsNullOrWhiteSpace(_config.AppID)
+					                 && !string.IsNullOrWhiteSpace(_config.DepotID)
+					                 && !string.IsNullOrWhiteSpace(_config.SteamCmdPath)
+					                 && !string.IsNullOrWhiteSpace(_username)
+					                 && !string.IsNullOrWhiteSpace(_password);
+					bool canBuild         = buildPathSet;
+					bool canUpload        = uploadReady && CheckBuildExeExists();
+					bool canBuildAndUpload = buildPathSet && uploadReady;
+
+					using (new GUILayout.HorizontalScope())
+					{
+						using (new EditorGUI.DisabledScope(!canBuild))
+						{
+							if (GUILayout.Button(new GUIContent("Build",
+								"Run the Unity build to the configured output path."),
+								GUILayout.Height(32)))
+							{
+								EditorApplication.delayCall += StartBuildOnly;
+							}
+						}
+
+						using (new EditorGUI.DisabledScope(!canUpload))
+						{
+							if (GUILayout.Button(new GUIContent("Upload",
+								"Upload the existing build at the output path to Steam via SteamCMD. " +
+								"Requires an executable to be present in the build output folder."),
+								GUILayout.Height(32)))
+							{
+								EditorApplication.delayCall += StartUploadOnly;
+							}
+						}
+					}
+
+					if (!buildPathSet)
+						EditorGUILayout.HelpBox("Set a build output path to enable Build.", MessageType.None);
+					else if (!canUpload)
+						EditorGUILayout.HelpBox("No executable found in the build output path. Run a build first.", MessageType.None);
+
+					// ── Build & Upload (one-click) ────────────────────────────────
+					EditorGUILayout.Space(6);
+
+					using (new EditorGUI.DisabledScope(!canBuildAndUpload))
+					{
+						if (GUILayout.Button("Build & Upload", _bigButtonStyle, GUILayout.Height(32)))
+							EditorApplication.delayCall += StartDeployment;
+					}
+
+					if (!canBuildAndUpload)
 					{
 						EditorGUILayout.HelpBox(
-							"Please fill in: App ID, Depot ID, SteamCMD path, username, and password.",
+							"Please fill in: Build Output Path, App ID, Depot ID, SteamCMD path, username, and password.",
 							MessageType.Warning);
 					}
 				}
@@ -609,6 +735,136 @@ namespace SteamDeployer
 		// ─── Deployment orchestration ─────────────────────────────────────────────
 
 		/// <summary>
+		/// Build-only: if a build path is already configured, builds directly.
+		/// If the path is empty, opens a folder picker first, saves the selection, then builds.
+		/// </summary>
+		private void StartBuildOnly()
+		{
+			if (_config == null) return;
+
+			// ── If path is empty, prompt for one first ────────────────────────────
+			if (string.IsNullOrWhiteSpace(_config.BuildOutputPath))
+			{
+				string picked = EditorUtility.OpenFolderPanel("Select Build Output Folder", "", "");
+				if (string.IsNullOrEmpty(picked)) return;   // user cancelled
+
+				_config.BuildOutputPath = NormalizeBuildOutputPath(picked);
+				EditorUtility.SetDirty(_config);
+				AssetDatabase.SaveAssets();
+			}
+
+			_logBuffer     = "";
+			_progressValue = 0.05f;
+			_taskLabel     = "Preparing build...";
+			_state         = DeployState.Building;
+			Repaint();
+
+			string buildOutputPath = ResolveBuildOutputPath();
+			string tempOutputPath  = buildOutputPath + "_steamdeployer_tmp";
+
+			// Build to a temp dir so the original is untouched if cancelled or failed.
+			if (Directory.Exists(tempOutputPath))
+				Directory.Delete(tempOutputPath, recursive: true);
+			Directory.CreateDirectory(tempOutputPath);
+
+			_taskLabel     = "Building Unity project...";
+			_progressValue = 0.15f;
+			Repaint();
+
+			BuildReport report = RunUnityBuild(tempOutputPath);
+
+			if (report == null || report.summary.result != BuildResult.Succeeded)
+			{
+				try { Directory.Delete(tempOutputPath, recursive: true); } catch { }
+				string detail = report != null
+					? $"Result={report.summary.result}, Errors={report.summary.totalErrors}"
+					: "BuildReport was null (build may have been cancelled).";
+				Debug.LogError($"[SteamDeployer] Unity build FAILED — {detail}.");
+				AppendLog($"BUILD FAILED: {detail}", isError: true);
+				SetFailedState("Build failed.");
+				return;
+			}
+
+			// Success: replace output path with the completed temp build.
+			if (Directory.Exists(buildOutputPath))
+				Directory.Delete(buildOutputPath, recursive: true);
+			Directory.Move(tempOutputPath, buildOutputPath);
+
+			Debug.Log($"[SteamDeployer] Unity build succeeded. Output: {buildOutputPath}");
+			AppendLog($"Build succeeded → {buildOutputPath}", isError: false);
+			_state         = DeployState.Success;
+			_progressValue = 1.0f;
+			_taskLabel     = "Build complete!";
+			Repaint();
+		}
+
+		/// <summary>
+		/// Upload-only: generates VDF scripts from the existing build output path and
+		/// launches steamcmd.exe without running a Unity build.
+		/// </summary>
+		private void StartUploadOnly()
+		{
+			if (!ValidatePreFlight()) return;
+
+			if (!CheckBuildExeExists())
+			{
+				EditorUtility.DisplayDialog("No Build Found",
+					$"No executable was found in:\n{_config.BuildOutputPath}\n\nPlease run a build first.", "OK");
+				return;
+			}
+
+			_isTestLoginContext  = false;
+			_pendingAppVdfPath   = "";
+			_steamGuardCodeInput = "";
+			_logBuffer           = "";
+			_progressValue       = 0.5f;
+			_taskLabel           = "Generating SteamCMD VDF scripts...";
+			_state               = DeployState.Uploading;
+			Repaint();
+
+			if (_saveCredentials && !string.IsNullOrEmpty(_password))
+				CryptographyHelper.SaveEncryptedPassword(_password);
+
+			string buildOutputPath = ResolveBuildOutputPath();
+
+			string appVdfPath;
+			try
+			{
+				string desc = ResolveMacros(_config.BuildDescription);
+				appVdfPath  = VDFGenerator.GenerateVdfScripts(_config, buildOutputPath, desc, ResolveSteamCmdPath());
+				AppendLog($"VDF scripts written. App VDF: {appVdfPath}", isError: false);
+			}
+			catch (Exception ex)
+			{
+				Debug.LogError($"[SteamDeployer] VDF generation failed: {ex.Message}");
+				AppendLog($"VDF generation failed: {ex.Message}", isError: true);
+				SetFailedState("VDF generation failed.");
+				return;
+			}
+
+			_taskLabel     = "Uploading to Steam via SteamCMD...";
+			_progressValue = 0.70f;
+			Repaint();
+
+			LaunchSteamCmd(appVdfPath, steamGuardCode: "");
+		}
+
+		/// <summary>
+		/// Returns true if an executable file exists directly inside the configured
+		/// BuildOutputPath (checks .exe, .app, .x86_64, .x86).
+		/// </summary>
+		private bool CheckBuildExeExists()
+		{
+			string path = ResolveBuildOutputPath();
+			if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return false;
+
+			return Directory.GetFiles(path, "*.exe",    SearchOption.TopDirectoryOnly).Length > 0
+			    || Directory.GetFiles(path, "*.app",    SearchOption.TopDirectoryOnly).Length > 0
+			    || Directory.GetFiles(path, "*.x86_64", SearchOption.TopDirectoryOnly).Length > 0
+			    || Directory.GetFiles(path, "*.x86",    SearchOption.TopDirectoryOnly).Length > 0;
+		}
+
+		/// <summary>
 		/// Entry point for the build + upload pipeline. Validates all inputs, triggers
 		/// the Unity build, generates VDF files, and launches steamcmd.exe.
 		/// </summary>
@@ -634,17 +890,19 @@ namespace SteamDeployer
 			_progressValue = 0.15f;
 			Repaint();
 
-			string buildOutputPath = Path.GetFullPath(
-				Path.Combine(Application.dataPath, "../Temp/SteamUploadOutput/"));
+			string buildOutputPath = ResolveBuildOutputPath();
+			string tempOutputPath  = buildOutputPath + "_steamdeployer_tmp";
 
-			if (Directory.Exists(buildOutputPath))
-				Directory.Delete(buildOutputPath, recursive: true);
-			Directory.CreateDirectory(buildOutputPath);
+			// Build to a temp dir so the original is untouched if cancelled or failed.
+			if (Directory.Exists(tempOutputPath))
+				Directory.Delete(tempOutputPath, recursive: true);
+			Directory.CreateDirectory(tempOutputPath);
 
-			BuildReport report = RunUnityBuild(buildOutputPath);
+			BuildReport report = RunUnityBuild(tempOutputPath);
 
 			if (report == null || report.summary.result != BuildResult.Succeeded)
 			{
+				try { Directory.Delete(tempOutputPath, recursive: true); } catch { }
 				string detail = report != null
 					? $"Result={report.summary.result}, Errors={report.summary.totalErrors}"
 					: "BuildReport was null (build may have been cancelled).";
@@ -654,6 +912,11 @@ namespace SteamDeployer
 				SetFailedState("Build failed.");
 				return;
 			}
+
+			// Success: replace output path with the completed temp build.
+			if (Directory.Exists(buildOutputPath))
+				Directory.Delete(buildOutputPath, recursive: true);
+			Directory.Move(tempOutputPath, buildOutputPath);
 
 			Debug.Log($"[SteamDeployer] Unity build succeeded. Output: {buildOutputPath}");
 			AppendLog($"Build succeeded → {buildOutputPath}", isError: false);
@@ -715,18 +978,23 @@ namespace SteamDeployer
 
 		/// <summary>
 		/// Invokes BuildPipeline.BuildPlayer using the currently active build settings.
+		/// On Unity 6+, activates the selected Build Profile (if any) before building.
 		/// </summary>
 		private BuildReport RunUnityBuild(string outputPath)
 		{
 			try
 			{
-				BuildPlayerOptions opts = BuildPlayerWindow.DefaultBuildMethods
-					.GetBuildPlayerOptions(new BuildPlayerOptions());
+#if UNITY_6000_0_OR_NEWER
+				if (_buildProfile != null)
+					UnityEditor.Build.Profile.BuildProfile.SetActiveBuildProfile(_buildProfile);
+#endif
+
+				BuildPlayerOptions opts = GetBuildPlayerOptionsWithoutDialog();
 
 				string exe = Application.productName + GetExeExtension(opts.target);
 				opts.locationPathName = Path.Combine(outputPath, exe);
-				opts.options          = BuildOptions.None;
-
+				Debug.Log(
+					$"[Steam Deployer] Unity build started. Output: {outputPath}, options: {opts.options}, target: {opts.target}");
 				return BuildPipeline.BuildPlayer(opts);
 			}
 			catch (BuildPlayerWindow.BuildMethodException ex)
@@ -739,6 +1007,27 @@ namespace SteamDeployer
 				Debug.LogError($"[SteamDeployer] Unexpected error during build: {ex.Message}");
 				return null;
 			}
+		}
+		
+		public static BuildPlayerOptions GetBuildPlayerOptionsWithoutDialog()
+		{
+			var internalMethod = typeof(BuildPlayerWindow.DefaultBuildMethods)
+				.GetMethod(
+					"GetBuildPlayerOptionsInternal",
+					BindingFlags.NonPublic | BindingFlags.Static
+				);
+
+			if (internalMethod == null)
+			{
+				Debug.LogError("GetBuildPlayerOptionsInternal not found");
+				return default;
+			}
+
+			return (BuildPlayerOptions)internalMethod.Invoke(null, new object[]
+			{
+				false,                    // askForBuildLocation = false
+				new BuildPlayerOptions()  // defaultBuildPlayerOptions
+			});
 		}
 
 		// ─── Steam Guard code submission ──────────────────────────────────────────
@@ -891,6 +1180,12 @@ namespace SteamDeployer
 				return false;
 			}
 
+			if (string.IsNullOrWhiteSpace(_config.BuildOutputPath))
+			{
+				EditorUtility.DisplayDialog("Error", "Build Output Path is not set.", "OK");
+				return false;
+			}
+
 			if (string.IsNullOrWhiteSpace(_config.AppID) || string.IsNullOrWhiteSpace(_config.DepotID))
 			{
 				EditorUtility.DisplayDialog("Error", "App ID and Depot ID are required.", "OK");
@@ -977,6 +1272,41 @@ namespace SteamDeployer
 		}
 
 		// ─── Path helpers ─────────────────────────────────────────────────────────
+
+		/// <summary>
+		/// If the path selected via Browse lies inside the Unity project, stores it as a
+		/// relative path from the project root (e.g., "Builds/Windows").
+		/// Paths outside the project are kept absolute.
+		/// </summary>
+		private static string NormalizeBuildOutputPath(string absolutePath)
+		{
+			string projectRoot = Path.GetFullPath(
+				Path.Combine(Application.dataPath, "..")).Replace('\\', '/');
+			string normalized = absolutePath.Replace('\\', '/');
+
+			if (normalized.StartsWith(projectRoot, StringComparison.OrdinalIgnoreCase))
+			{
+				string relative = normalized.Substring(projectRoot.Length).TrimStart('/');
+				return relative;
+			}
+
+			return absolutePath;
+		}
+
+		/// <summary>
+		/// Resolves the build output path to an absolute path for filesystem operations.
+		/// Relative paths are resolved from the Unity project root.
+		/// </summary>
+		private string ResolveBuildOutputPath()
+		{
+			if (string.IsNullOrEmpty(_config?.BuildOutputPath)) return "";
+
+			string path = _config.BuildOutputPath;
+			if (Path.IsPathRooted(path)) return path;
+
+			string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+			return Path.GetFullPath(Path.Combine(projectRoot, path));
+		}
 
 		/// <summary>
 		/// If the path selected via Browse lies inside the Unity project, stores it as a

@@ -10,12 +10,15 @@ Unity Editor plugin that runs a Unity build, generates SteamCMD VDF scripts, and
 
 ## Features
 
-- Sequentially executes: `BuildPipeline.BuildPlayer` → VDF generation → SteamCMD upload, controlled from one window.
+- Three operation modes from one window: **Build** only, **Upload** only, or **Build & Upload** (one-click).
+- Configurable **Build Output Path** stored in the config asset (absolute or project-relative). Builds use an atomic temp-swap so a failed build never corrupts an existing output folder.
 - Dynamically generates `app_build_{AppID}.vdf` and `depot_build_{DepotID}.vdf` into the SteamCMD `scripts/` directory.
 - `SetLive` is an optional toggle. When enabled, promotes the specified branch after upload; when disabled, `SetLive` is left empty in the VDF (required for apps not yet past Valve's review queue).
 - SteamCMD runs as an asynchronous child process; stdout/stderr are bridged to the Unity main thread via `ConcurrentQueue`, so the Editor is never blocked.
 - Mid-operation Steam Guard input: when SteamCMD requests a code, the window enters `WaitingForSteamGuard` state; submitting the code resumes the upload without re-running the build.
 - **Test Login** button: runs `+login` only to verify credentials without triggering a build or upload.
+- **Unity 6+ Build Profile** support: optionally activate a Build Profile asset before building.
+- Authentication and App Settings sections collapse automatically when all required fields are filled.
 - Password encrypted with AES-256-CBC using a key derived from the machine's hardware ID, stored in `EditorPrefs`. Never written to any project file.
 - Non-ASCII path validation (SteamCMD does not support Unicode paths).
 - Upload is aborted automatically if the Unity build fails.
@@ -74,6 +77,7 @@ The config asset contains no sensitive data and is safe to commit.
 | **Build Description** | Label shown in Steamworks build history. Supports `{Version}` (`Application.version`) and `{Date}` macros |
 | **Ignore Files** | Comma-separated glob patterns mapped to VDF `FileExclusion` entries |
 | **SteamCMD Path** | Absolute path to `steamcmd.exe` (Windows) or `steamcmd` (macOS/Linux) |
+| **Build Output Path** | Absolute or project-relative path to the directory where Unity outputs the build. Also used as the depot content root for the Steam upload |
 
 ### 3. Authentication
 
@@ -94,12 +98,20 @@ After a successful login from the machine, SteamCMD caches the session; subseque
 
 ## Deployment
 
-Clicking **"Build & Upload to Steam"** runs the following stages in order:
+The **Build & Upload** section exposes three buttons:
+
+| Button | What it does |
+|--------|-------------|
+| **Build** | Runs `BuildPipeline.BuildPlayer` to the configured Build Output Path. Requires Build Output Path to be set. |
+| **Upload** | Generates VDF scripts and launches SteamCMD against the existing build folder. Requires an executable to already be present in the output path. |
+| **Build & Upload** | Runs both stages in sequence. Enabled only when all fields are filled and a Build Output Path is set. |
+
+Clicking **Build & Upload** runs the following stages in order:
 
 | Stage | Description |
 |-------|-------------|
 | Validate | Checks field completeness, path validity, non-ASCII characters |
-| Unity Build | Calls `BuildPipeline.BuildPlayer` with the current Build Settings |
+| Unity Build | Calls `BuildPipeline.BuildPlayer` with the current Build Settings (or the selected Build Profile on Unity 6+). Builds to a temp folder first; the output folder is replaced only on success. |
 | Generate VDF | Writes `app_build_{AppID}.vdf` and `depot_build_{DepotID}.vdf` to the SteamCMD `scripts/` directory |
 | SteamCMD Upload | Launches the child process; log output streams to the window and Unity Console |
 | Result | Green banner on success; red banner with error detail on failure |
